@@ -16,3 +16,6 @@
 local.properties
 .env
 debug.keystore
+.neon
+node_modules/
+.agents
