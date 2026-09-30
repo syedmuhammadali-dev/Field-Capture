@@ -1,38 +1,35 @@
-import { Router, Request, Response } from 'express';
+import { NextFunction, Router, Request, Response } from 'express';
 import multer from 'multer';
-import path from 'path';
-import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
+import { del, put } from '@vercel/blob';
 import { pool } from '../db';
 
 const router = Router();
 
-// Ensure local uploads directory exists (Section 7: simple local development storage strategy)
-const uploadsDir = path.join(__dirname, '../../uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-}
-
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => {
-    cb(null, uploadsDir);
-  },
-  filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname) || '.jpg';
-    cb(null, `ticket-${Date.now()}-${uuidv4().substring(0, 8)}${ext}`);
-  },
-});
-
 const upload = multer({
-  storage,
-  limits: { fileSize: 15 * 1024 * 1024 }, // 15 MB
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 3 * 1024 * 1024, fields: 4, fieldSize: 16 * 1024 },
 });
+
+const parsePhoto = (req: Request, res: Response, next: NextFunction) => {
+  upload.single('photo')(req, res, (error) => {
+    if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ error: 'Ticket photo must be 3 MB or smaller' });
+    }
+    if (error) {
+      return res.status(400).json({ error: 'Invalid delivery photo upload' });
+    }
+    next();
+  });
+};
 
 /**
  * POST /api/deliveries
  * Saves a delivery ticket with duplicate submission protection via idempotencyKey (Section 13 & 14)
  */
-router.post('/', upload.single('photo'), async (req: Request, res: Response) => {
+router.post('/', parsePhoto, async (req: Request, res: Response) => {
+  let uploadedPhotoUrl: string | null = null;
+
   try {
     const { supplierName, poNumber, note, idempotencyKey } = req.body;
 
@@ -46,37 +43,53 @@ router.post('/', upload.single('photo'), async (req: Request, res: Response) => 
       return res.status(400).json({ error: 'idempotencyKey is required' });
     }
 
+    if (req.file && !['image/jpeg', 'image/png', 'image/webp'].includes(req.file.mimetype)) {
+      return res.status(415).json({ error: 'Ticket photo must be JPEG, PNG, or WebP' });
+    }
+
     const trimmedKey = idempotencyKey.trim();
 
     // 1. Idempotency Check: query database for existing record with this idempotency_key
-    try {
-      const existingCheck = await pool.query(
-        'SELECT * FROM deliveries WHERE idempotency_key = $1 LIMIT 1',
-        [trimmedKey]
-      );
+    const existingCheck = await pool.query(
+      'SELECT * FROM deliveries WHERE idempotency_key = $1 LIMIT 1',
+      [trimmedKey]
+    );
 
-      if (existingCheck.rows.length > 0) {
-        const existing = existingCheck.rows[0];
-        console.log(`[Idempotency] Returning existing delivery ${existing.id} for key ${trimmedKey}`);
-        return res.status(200).json({
-          id: existing.id,
-          supplierName: existing.supplier_name,
-          poNumber: existing.po_number,
-          note: existing.note,
-          photoUrl: existing.photo_url,
-          idempotencyKey: existing.idempotency_key,
-          createdAt: existing.created_at,
-          isDuplicate: true,
-          message: 'Delivery already processed with this idempotency key.'
-        });
-      }
-    } catch (dbErr) {
-      console.warn('Database idempotency check skipped or unavailable:', (dbErr as Error).message);
+    if (existingCheck.rows.length > 0) {
+      const existing = existingCheck.rows[0];
+      console.log(`[Idempotency] Returning existing delivery ${existing.id} for key ${trimmedKey}`);
+      return res.status(200).json({
+        id: existing.id,
+        supplierName: existing.supplier_name,
+        poNumber: existing.po_number,
+        note: existing.note,
+        photoUrl: existing.photo_url,
+        idempotencyKey: existing.idempotency_key,
+        createdAt: existing.created_at,
+        isDuplicate: true,
+        message: 'Delivery already processed with this idempotency key.'
+      });
     }
 
-    // 2. Prepare new delivery record
+    // 2. Store the photo outside the serverless function filesystem.
+    let photoUrl: string | null = null;
+    if (req.file) {
+      const extension = req.file.mimetype === 'image/png'
+        ? 'png'
+        : req.file.mimetype === 'image/webp'
+          ? 'webp'
+          : 'jpg';
+      const blob = await put(`delivery-tickets/${uuidv4()}.${extension}`, req.file.buffer, {
+        access: 'public',
+        contentType: req.file.mimetype,
+        addRandomSuffix: true,
+      });
+      photoUrl = blob.url;
+      uploadedPhotoUrl = blob.url;
+    }
+
+    // 3. Prepare new delivery record
     const deliveryId = `srv_${Date.now()}_${uuidv4().substring(0, 8)}`;
-    const photoUrl = req.file ? `/uploads/${req.file.filename}` : null;
     const now = new Date();
 
     try {
@@ -89,6 +102,7 @@ router.post('/', upload.single('photo'), async (req: Request, res: Response) => 
       );
 
       const saved = insertResult.rows[0];
+      uploadedPhotoUrl = null;
       return res.status(201).json({
         id: saved.id,
         supplierName: saved.supplier_name,
@@ -103,6 +117,10 @@ router.post('/', upload.single('photo'), async (req: Request, res: Response) => 
     } catch (insertErr: any) {
       // Catch unique constraint violation in case of a race condition
       if (insertErr.code === '23505') { // PostgreSQL unique violation code
+        if (uploadedPhotoUrl) {
+          await del(uploadedPhotoUrl).catch(() => undefined);
+          uploadedPhotoUrl = null;
+        }
         const fallback = await pool.query('SELECT * FROM deliveries WHERE idempotency_key = $1', [trimmedKey]);
         if (fallback.rows.length > 0) {
           const row = fallback.rows[0];
@@ -122,6 +140,9 @@ router.post('/', upload.single('photo'), async (req: Request, res: Response) => 
       throw insertErr;
     }
   } catch (error) {
+    if (uploadedPhotoUrl) {
+      await del(uploadedPhotoUrl).catch(() => undefined);
+    }
     console.error('Error saving delivery:', error);
     return res.status(500).json({ error: (error as Error).message || 'Internal Server Error' });
   }

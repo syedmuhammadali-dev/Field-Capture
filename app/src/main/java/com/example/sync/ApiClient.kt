@@ -1,5 +1,6 @@
 package com.example.sync
 
+import com.example.BuildConfig
 import com.example.data.model.Delivery
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -11,8 +12,6 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.asRequestBody
 import org.json.JSONObject
 import java.io.File
-import java.io.IOException
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 sealed class ApiResult {
@@ -21,16 +20,13 @@ sealed class ApiResult {
 }
 
 class ApiClient(
-    private var baseUrl: String = "http://10.0.2.2:3000"
+    private var baseUrl: String = BuildConfig.API_BASE_URL.trimEnd('/')
 ) {
     private val client = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(8, TimeUnit.SECONDS)
         .writeTimeout(8, TimeUnit.SECONDS)
         .build()
-
-    // In-memory backend registry for standalone mode and idempotency verification
-    private val serverProcessedDeliveries = ConcurrentHashMap<String, String>() // idempotencyKey -> serverId
 
     fun setBaseUrl(url: String) {
         this.baseUrl = url.trimEnd('/')
@@ -39,9 +35,7 @@ class ApiClient(
     fun getBaseUrl(): String = baseUrl
 
     /**
-     * Uploads a delivery to the backend.
-     * Tries live HTTP endpoint first. If offline/connection refused, or in simulation mode,
-     * gracefully uses the built-in server handler with real idempotency checks.
+    * Uploads a delivery to the configured backend.
      */
     suspend fun uploadDelivery(
         delivery: Delivery,
@@ -91,39 +85,9 @@ class ApiClient(
                 return@withContext ApiResult.Error("Server returned code ${response.code}: $responseBody", response.code)
             }
         } catch (e: Exception) {
-            // Live server not running on localhost/10.0.2.2 or unreachable.
-            // Fall back to robust integrated server handler for prototype demo.
-            return@withContext handleStandaloneServerSync(delivery, photoExists)
-        }
-    }
-
-    private suspend fun handleStandaloneServerSync(delivery: Delivery, photoExists: Boolean): ApiResult {
-        // Realistic simulated upload latency
-        delay(800)
-
-        // Idempotency check:
-        // If this idempotencyKey was already processed, return existing serverId
-        val existingServerId = serverProcessedDeliveries[delivery.idempotencyKey]
-        if (existingServerId != null) {
-            return ApiResult.Success(
-                serverId = existingServerId,
-                message = "Recognized duplicate submission via idempotencyKey. Returned existing record.",
-                isDuplicate = true
+            return@withContext ApiResult.Error(
+                "Unable to reach delivery API: ${e.localizedMessage ?: "Network error"}"
             )
         }
-
-        // New delivery processed
-        val generatedServerId = "srv_pg_${System.currentTimeMillis()}_${(1000..9999).random()}"
-        serverProcessedDeliveries[delivery.idempotencyKey] = generatedServerId
-
-        return ApiResult.Success(
-            serverId = generatedServerId,
-            message = "Successfully synchronized payload & photo to backend.",
-            isDuplicate = false
-        )
-    }
-
-    fun clearMockProcessedCache() {
-        serverProcessedDeliveries.clear()
     }
 }

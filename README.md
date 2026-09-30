@@ -53,7 +53,7 @@ FieldCapture enables foremen to immediately photograph physical delivery tickets
 │                                                        │
 │  [Node.js + Express + TypeScript API]                  │
 │         │                                              │
-│         ├── Photo Storage: /uploads/ticket-*.jpg       │
+│         ├── Photo Storage: Vercel Blob (ticket images) │
 │         │                                              │
 │         ▼                                              │
 │  [PostgreSQL Database]                                 │
@@ -145,6 +145,17 @@ The server exposes:
 - Create delivery: `POST http://localhost:3000/api/deliveries`
 - List deliveries: `GET http://localhost:3000/api/deliveries`
 - Fetch by ID: `GET http://localhost:3000/api/deliveries/:id`
+
+### Deploy API to Vercel
+1. Import the repository into Vercel and set **Root Directory** to `server`.
+2. In the Vercel project, open **Storage**, create a Blob store with **Public** access, and connect it to the project for Production. Vercel provides the Blob credentials to the deployment.
+3. Add `DATABASE_URL` in the Vercel project's Environment Variables. Use the pooled Neon connection string for the API.
+4. Deploy the project. Check `https://<deployment-domain>/api/health` and confirm the database reports `connected`.
+5. Set `API_BASE_URL` in the repository-root `.env` to the deployed HTTPS domain, then rebuild the APK. The app reads this value from generated `BuildConfig`.
+
+The API compresses ticket photos on Android and accepts files up to 3 MB to stay below Vercel Functions' 4.5 MB request-body limit. Public Blob URLs can be opened by anyone who has the URL; do not use this public store for sensitive ticket images.
+
+Vercel Hobby currently includes 1 GB Blob storage, 10,000 simple operations, 2,000 advanced operations, and 10 GB Blob transfer per month. Hobby is for personal, non-commercial use; check Vercel's current terms before using it for a business/jobsite workflow.
 
 ---
 

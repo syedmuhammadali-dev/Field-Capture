@@ -1,6 +1,5 @@
 import express from 'express';
 import cors from 'cors';
-import path from 'path';
 import dotenv from 'dotenv';
 import deliveriesRouter from './routes/deliveries';
 import { initDatabase, pool } from './db';
@@ -13,9 +12,6 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
-// Serve uploaded photos
-app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
 // Health check endpoint (Section 14)
 app.get('/api/health', async (_req, res) => {
