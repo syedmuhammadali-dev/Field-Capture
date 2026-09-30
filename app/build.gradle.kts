@@ -67,6 +67,8 @@ android {
 secrets {
   propertiesFileName = ".env"
   defaultPropertiesFileName = ".env.example"
+  ignoreList.add("DATABASE_URL")
+  ignoreList.add("DATABASE_URL_UNPOOLED")
   ignoreList.add("FIREBASE_APPCHECK_DEBUG_TOKEN")
 }
 
