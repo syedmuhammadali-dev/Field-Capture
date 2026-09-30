@@ -1,0 +1,6 @@
+{
+  "name": "FieldCapture",
+  "description": "Offline-first material delivery field-capture app with SQLite persistence and background sync",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
