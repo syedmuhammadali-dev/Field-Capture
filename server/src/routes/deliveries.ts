@@ -1,10 +1,17 @@
 import { NextFunction, Router, Request, Response } from 'express';
 import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { del, put } from '@vercel/blob';
 import { pool } from '../db';
 
 const router = Router();
+
+const localUploadsDir = path.join(__dirname, '../../uploads');
+if (!process.env.VERCEL && !fs.existsSync(localUploadsDir)) {
+  fs.mkdirSync(localUploadsDir, { recursive: true });
+}
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -74,18 +81,29 @@ router.post('/', parsePhoto, async (req: Request, res: Response) => {
     // 2. Store the photo outside the serverless function filesystem.
     let photoUrl: string | null = null;
     if (req.file) {
-      const extension = req.file.mimetype === 'image/png'
-        ? 'png'
-        : req.file.mimetype === 'image/webp'
-          ? 'webp'
-          : 'jpg';
-      const blob = await put(`delivery-tickets/${uuidv4()}.${extension}`, req.file.buffer, {
-        access: 'public',
-        contentType: req.file.mimetype,
-        addRandomSuffix: true,
-      });
-      photoUrl = blob.url;
-      uploadedPhotoUrl = blob.url;
+      if (!process.env.VERCEL && !process.env.BLOB_READ_WRITE_TOKEN && !process.env.BLOB_STORE_ID) {
+        const extension = req.file.mimetype === 'image/png'
+          ? 'png'
+          : req.file.mimetype === 'image/webp'
+            ? 'webp'
+            : 'jpg';
+        const filename = `ticket-${Date.now()}-${uuidv4().substring(0, 8)}.${extension}`;
+        fs.writeFileSync(path.join(localUploadsDir, filename), req.file.buffer);
+        photoUrl = `/uploads/${filename}`;
+      } else {
+        const extension = req.file.mimetype === 'image/png'
+          ? 'png'
+          : req.file.mimetype === 'image/webp'
+            ? 'webp'
+            : 'jpg';
+        const blob = await put(`delivery-tickets/${uuidv4()}.${extension}`, req.file.buffer, {
+          access: 'public',
+          contentType: req.file.mimetype,
+          addRandomSuffix: true,
+        });
+        photoUrl = blob.url;
+        uploadedPhotoUrl = blob.url;
+      }
     }
 
     // 3. Prepare new delivery record
